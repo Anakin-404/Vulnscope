@@ -6,6 +6,8 @@ from database import get_history, init_db, save_scan
 from nvd_client import NVDClient
 
 app = Flask(__name__)
+application = app
+handler = app
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 
