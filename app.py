@@ -1,168 +1,338 @@
-import streamlit as st
-import pandas as pd
+import os
+
+from flask import Flask, render_template_string, request
+
+from database import get_history, init_db, save_scan
 from nvd_client import NVDClient
-from database import init_db, save_scan, get_history
 
-st.set_page_config(page_title="VulnScope", page_icon="🛡️", layout="wide")
-
-st.markdown("""
-<style>
-.main {background-color:#0b1220;}
-.block-container {padding-top:2rem;}
-.metric-card {
-    padding: 18px; border-radius: 12px; background:#111827;
-    border:1px solid #263244; text-align:center;
-}
-</style>
-""", unsafe_allow_html=True)
-
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 
-st.title("🛡️ VulnScope")
-st.caption("Software Vulnerability Discovery & Analysis Tool")
+HTML_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VulnScope</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #111827;
+      --panel-alt: #1f2937;
+      --line: #2b3a4f;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #60a5fa;
+      --danger: #ef4444;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2rem 1rem 4rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.25);
+      padding: 1.25rem;
+      margin-top: 1rem;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr auto;
+      gap: 0.75rem;
+      align-items: end;
+    }
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    input, button, select {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #0f172a;
+      color: var(--text);
+      padding: 0.8rem 0.9rem;
+      font-size: 1rem;
+    }
+    button {
+      background: var(--accent);
+      color: #08111f;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .dashboard {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(110px, 1fr));
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    .metric {
+      padding: 1rem;
+      background: var(--panel-alt);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    .metric .label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    .metric .value {
+      font-size: 1.8rem;
+      font-weight: 700;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.75rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.75rem 0.5rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .muted { color: var(--muted); }
+    .error { color: var(--danger); }
+    .success { color: var(--success); }
+    .small { font-size: 0.85rem; }
+    .pill {
+      display: inline-block;
+      padding: 0.25rem 0.5rem;
+      border-radius: 999px;
+      background: rgba(96, 165, 250, 0.12);
+      border: 1px solid rgba(96, 165, 250, 0.4);
+      color: var(--text);
+      font-size: 0.8rem;
+    }
+    @media (max-width: 820px) {
+      .form-grid, .dashboard { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🛡️ VulnScope</h1>
+    <p class="muted">Software Vulnerability Discovery & Analysis Tool</p>
 
-with st.sidebar:
-    st.header("Configuration")
-    api_key = st.text_input("NVD API Key (optional)", type="password",
-                            help="An NVD API key improves rate limits. The app does not store it.")
-    st.divider()
-    st.info("Enter a product/software name and version. VulnScope queries the NVD CVE database dynamically.")
+    <div class="card">
+      <form method="post" action="/scan">
+        <div class="form-grid">
+          <div>
+            <label for="product">Software / Product</label>
+            <input id="product" name="product" placeholder="e.g. Google Chrome" value="{{ product or '' }}" required />
+          </div>
+          <div>
+            <label for="version">Version</label>
+            <input id="version" name="version" placeholder="e.g. 120.0" value="{{ version or '' }}" required />
+          </div>
+          <div>
+            <label for="api_key">NVD API Key (optional)</label>
+            <input id="api_key" name="api_key" type="password" placeholder="Optional" />
+          </div>
+          <div>
+            <button type="submit">Scan</button>
+          </div>
+        </div>
+      </form>
+    </div>
 
-if "targets" not in st.session_state:
-    st.session_state.targets = []
+    {% if error %}
+      <div class="card error">{{ error }}</div>
+    {% endif %}
 
-st.subheader("Add Software")
-c1, c2, c3 = st.columns([2, 1, 1])
-with c1:
-    product = st.text_input("Software / Product", placeholder="e.g. Google Chrome")
-with c2:
-    version = st.text_input("Version", placeholder="e.g. 120.0")
-with c3:
-    st.write("")
-    st.write("")
-    if st.button("➕ Add", use_container_width=True):
-        if product.strip() and version.strip():
-            item = {"product": product.strip(), "version": version.strip()}
-            if item not in st.session_state.targets:
-                st.session_state.targets.append(item)
-        else:
-            st.warning("Enter both product and version.")
+    {% if results %}
+      {% set all_cves = [] %}
+      {% for item in results %}
+        {% for cve in item.cves %}
+          {% set _ = all_cves.append(cve) %}
+        {% endfor %}
+      {% endfor %}
+      {% set critical = 0 %}
+      {% set high = 0 %}
+      {% set medium = 0 %}
+      {% set low = 0 %}
+      {% for cve in all_cves %}
+        {% if cve.severity == 'CRITICAL' %}{% set critical = critical + 1 %}{% endif %}
+        {% if cve.severity == 'HIGH' %}{% set high = high + 1 %}{% endif %}
+        {% if cve.severity == 'MEDIUM' %}{% set medium = medium + 1 %}{% endif %}
+        {% if cve.severity == 'LOW' %}{% set low = low + 1 %}{% endif %}
+      {% endfor %}
 
-if st.session_state.targets:
-    st.subheader("Scan Targets")
-    for i, item in enumerate(st.session_state.targets):
-        cols = st.columns([5, 3, 1])
-        cols[0].write(item["product"])
-        cols[1].write(item["version"])
-        if cols[2].button("Remove", key=f"remove_{i}"):
-            st.session_state.targets.pop(i)
-            st.rerun()
+      <div class="card">
+        <h2>Security Overview</h2>
+        <div class="dashboard">
+          <div class="metric"><span class="label">Software Scanned</span><span class="value">{{ results|length }}</span></div>
+          <div class="metric"><span class="label">CVEs Found</span><span class="value">{{ all_cves|length }}</span></div>
+          <div class="metric"><span class="label">Critical</span><span class="value">{{ critical }}</span></div>
+          <div class="metric"><span class="label">High</span><span class="value">{{ high }}</span></div>
+          <div class="metric"><span class="label">Medium / Low</span><span class="value">{{ medium + low }}</span></div>
+        </div>
+      </div>
 
-    if st.button("🔎 Scan All Targets", type="primary", use_container_width=True):
-        client = NVDClient(api_key=api_key or None)
-        results = []
+      <div class="card">
+        <h2>Vulnerability Summary</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Software</th>
+              <th>Version</th>
+              <th>CVEs Found</th>
+              <th>Highest Severity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in results %}
+              {% set rank = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'UNKNOWN': 0} %}
+              {% set highest = '—' %}
+              {% if item.cves %}
+                {% set highest = item.cves[0].severity %}
+                {% for cve in item.cves[1:] %}
+                  {% if rank.get(cve.severity, 0) > rank.get(highest, 0) %}
+                    {% set highest = cve.severity %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              <tr>
+                <td>{{ item.product }}</td>
+                <td>{{ item.version }}</td>
+                <td>{{ item.cves|length }}</td>
+                <td><span class="pill">{{ highest }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
 
-        progress = st.progress(0)
-        status = st.empty()
+      <div class="card">
+        <h2>CVE Details</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Software</th>
+              <th>Version</th>
+              <th>CVE</th>
+              <th>Severity</th>
+              <th>CVSS</th>
+              <th>Published</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in results %}
+              {% for cve in item.cves %}
+                <tr>
+                  <td>{{ item.product }}</td>
+                  <td>{{ item.version }}</td>
+                  <td>{{ cve.id }}</td>
+                  <td>{{ cve.severity }}</td>
+                  <td>{{ cve.cvss }}</td>
+                  <td>{{ cve.published }}</td>
+                </tr>
+              {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
 
-        for i, target in enumerate(st.session_state.targets):
-            status.write(f"Scanning **{target['product']} {target['version']}**...")
-            try:
-                cves = client.find_cves(target["product"], target["version"])
-                results.append({**target, "cves": cves})
-            except Exception as exc:
-                results.append({**target, "cves": [], "error": str(exc)})
-            progress.progress((i + 1) / len(st.session_state.targets))
+    <div class="card">
+      <h2>Scan History</h2>
+      {% if history %}
+        <table>
+          <thead>
+            <tr>
+              <th>Scanned At</th>
+              <th>Software</th>
+              <th>Version</th>
+              <th>CVEs</th>
+              <th>Highest Severity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in history %}
+              <tr>
+                <td>{{ row['Scanned At'] }}</td>
+                <td>{{ row['Software'] }}</td>
+                <td>{{ row['Version'] }}</td>
+                <td>{{ row['CVEs'] }}</td>
+                <td>{{ row['Highest Severity'] }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">No previous scans yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>
+"""
 
-        st.session_state.scan_results = results
-        save_scan(results)
-        status.success("Scan completed.")
 
-if "scan_results" in st.session_state:
-    results = st.session_state.scan_results
-    all_cves = [cve for item in results for cve in item.get("cves", [])]
+@app.get("/")
+def home():
+    return render_template_string(HTML_TEMPLATE, results=[], history=get_history(limit=10), product="", version="", error="")
 
-    critical = sum(c.get("severity") == "CRITICAL" for c in all_cves)
-    high = sum(c.get("severity") == "HIGH" for c in all_cves)
-    medium = sum(c.get("severity") == "MEDIUM" for c in all_cves)
-    low = sum(c.get("severity") == "LOW" for c in all_cves)
 
-    st.divider()
-    st.subheader("Security Overview")
+@app.post("/scan")
+def scan():
+    product = (request.form.get("product") or "").strip()
+    version = (request.form.get("version") or "").strip()
+    api_key = (request.form.get("api_key") or "").strip() or None
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Software Scanned", len(results))
-    m2.metric("CVEs Found", len(all_cves))
-    m3.metric("Critical", critical)
-    m4.metric("High", high)
-    m5.metric("Medium / Low", medium + low)
+    if not product or not version:
+        return render_template_string(
+            HTML_TEMPLATE,
+            results=[],
+            history=get_history(limit=10),
+            product=product,
+            version=version,
+            error="Enter both product and version.",
+        )
 
-    st.subheader("Vulnerability Summary")
-    rows = []
-    severity_rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
+    client = NVDClient(api_key=api_key)
+    results = []
+    target = {"product": product, "version": version}
 
-    for item in results:
-        cves = item.get("cves", [])
-        highest = max((c.get("severity", "UNKNOWN") for c in cves),
-                      key=lambda x: severity_rank.get(x, 0), default="—")
-        rows.append({
-            "Software": item["product"],
-            "Version": item["version"],
-            "CVEs Found": len(cves),
-            "Highest Severity": highest
-        })
+    try:
+        cves = client.find_cves(product, version)
+        results.append({**target, "cves": cves})
+    except Exception as exc:
+        results.append({**target, "cves": [], "error": str(exc)})
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    save_scan(results)
+    return render_template_string(
+        HTML_TEMPLATE,
+        results=results,
+        history=get_history(limit=10),
+        product=product,
+        version=version,
+        error="",
+    )
 
-    st.subheader("CVE Details")
-    filter_options = ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
-    severity_filter = st.selectbox("Filter by severity", filter_options)
 
-    selected = []
-    for item in results:
-        for cve in item.get("cves", []):
-            if severity_filter == "ALL" or cve.get("severity", "UNKNOWN") == severity_filter:
-                selected.append({**cve, "software": item["product"], "version": item["version"]})
-
-    if selected:
-        detail_df = pd.DataFrame([{
-            "Software": x["software"],
-            "Version": x["version"],
-            "CVE": x["id"],
-            "Severity": x["severity"],
-            "CVSS": x["cvss"],
-            "Published": x["published"]
-        } for x in selected])
-        st.dataframe(detail_df, use_container_width=True, hide_index=True)
-
-        cve_ids = [x["id"] for x in selected]
-        chosen_id = st.selectbox("View CVE", cve_ids)
-        chosen = next(x for x in selected if x["id"] == chosen_id)
-
-        st.markdown(f"### {chosen['id']}")
-        st.write(f"**Severity:** {chosen['severity']}  |  **CVSS:** {chosen['cvss']}")
-        st.write(f"**Published:** {chosen['published']}  |  **Last Modified:** {chosen['last_modified']}")
-        st.write("**Description**")
-        st.write(chosen["description"] or "No description available.")
-
-        st.write("**Affected CPEs**")
-        if chosen["affected_cpes"]:
-            for cpe in chosen["affected_cpes"][:20]:
-                st.code(cpe)
-        else:
-            st.write("No affected CPE information returned.")
-
-        if chosen["references"]:
-            st.write("**References**")
-            for ref in chosen["references"]:
-                st.markdown(f"- [{ref}]({ref})")
-    else:
-        st.success("No known CVEs found for the selected software/version with the current NVD matching logic.")
-
-st.divider()
-st.subheader("Scan History")
-history = get_history(limit=20)
-if history:
-    st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True)
-else:
-    st.caption("No previous scans yet.")
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), debug=False)
