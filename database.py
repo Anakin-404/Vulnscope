@@ -1,8 +1,15 @@
 import json
+import os
 import sqlite3
+import tempfile
 from datetime import datetime
 
-DB_PATH = "vulnscope.db"
+DB_PATH = os.environ.get("VULNSCOPE_DB_PATH")
+if not DB_PATH:
+    if os.environ.get("VERCEL"):
+        DB_PATH = os.path.join(tempfile.gettempdir(), "vulnscope.db")
+    else:
+        DB_PATH = "vulnscope.db"
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
